@@ -20,6 +20,7 @@ CLIENT_REPO=/mltf-root
 CLIENT_REPO_RO=/mltf-root-ro
 
 CONTAINER_IMAGE=buildtest
+PLATFORM=amd64
 
 # TODO switch on containerization: e.g. support singularity
 if [ 1 -eq 1 ]; then
@@ -30,19 +31,22 @@ if [ 1 -eq 1 ]; then
 
     # First install python... this is installed to the real path (no client
     # code)
+    # TODO long-term platform should be configurable (e.g. to run on GH nodes)
     nerdctl container run --rm -it \
+      --platform ${PLATFORM} \
       -v ${HOST_SOURCE}:${CLIENT_SOURCE}:ro \
       -v ${HOST_REPO}:${CLIENT_REPO}:rw \
       -e PYENV_ROOT=${CLIENT_REPO}/pyenv ${CONTAINER_IMAGE} bash --noprofile --norc ${CLIENT_SOURCE}/internal-build-python.sh "$@"
     # ... then install the environment itself, we don't give rw access to the
     # repo by default, we copy the files over later.
-    exit
+
     # Make a temp dir...
     SCRATCH=$(mktemp -t tmp.XXXXXXXXXX)
     # ... and then delete it when the job exits
     trap "rm -rf \"$SCRATCH\"" EXIT
 
     nerdctl container run --rm -it \
+      --platform ${PLATFORM} \
       -v ${HOST_SOURCE}:${CLIENT_SOURCE}:ro \
       -v ${SCRATCH}:${CLIENT_REPO}:rw \
       -v ${HOST_REPO}:${CLIENT_REPO_RO}:ro \

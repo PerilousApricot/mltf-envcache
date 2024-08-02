@@ -8,5 +8,6 @@
 #
 
 # FIXME accept inputs, confiure Dockerfile dynamically
+PLATFORM=amd64
 
-nerdctl build docks -t buildimage
+nerdctl build --platform $PLATFORM docks -t buildimage
