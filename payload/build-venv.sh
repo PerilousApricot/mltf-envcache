@@ -1,17 +1,15 @@
 #!/bin/bash
 
-mkdir -p build-raw build-nerdctl
+mkdir -p build-raw build-docker
 
-# Usage: ./build-venv.sh <pyenv version> <yaml>
+# Usage: ./build-venv.sh <pyenv version>
 
+# Step 1: Clone pyenv if it doesn't exist
 if [ ! -d pyenv ]; then
   git clone https://github.com/pyenv/pyenv.git
 fi
 
-# TODO configure installation path
-# TODO configure build image (e.g. choose C7 or R9)
-
-# TODO Make this configurable
+# Paths for source and repo directories
 HOST_SOURCE=$(pwd)
 CLIENT_SOURCE=/mltf-build
 
@@ -19,43 +17,60 @@ HOST_REPO=$(pwd)/repo
 CLIENT_REPO=/mltf-root
 CLIENT_REPO_RO=/mltf-root-ro
 
-CONTAINER_IMAGE=buildtest
+CONTAINER_IMAGE=buildimage
 PLATFORM=amd64
 
-# TODO switch on containerization: e.g. support singularity
-if [ 1 -eq 1 ]; then
+# Step 2: Build the Docker image
+./payload/build-container.sh
 
-    # Make sure we have the build image
-    # TODO pass this in as argument
-    ./build-container.sh
+# Step 3: Install Python using pyenv inside Docker container
+docker run --rm -it \
+  --platform ${PLATFORM} \
+  -v ${HOST_SOURCE}:${CLIENT_SOURCE}:rw \
+  -v ${HOST_SOURCE}/pyenv:${CLIENT_SOURCE}/payload/pyenv:rw \
+  -v ${HOST_REPO}:${CLIENT_REPO}:rw \
+  -e PYENV_ROOT=${CLIENT_REPO}/pyenv ${CONTAINER_IMAGE} \
+  bash --noprofile --norc ${CLIENT_SOURCE}/payload/internal-build-python.sh "$@"
 
-    # First install python... this is installed to the real path (no client
-    # code)
-    # TODO long-term platform should be configurable (e.g. to run on GH nodes)
-    nerdctl container run --rm -it \
-      --platform ${PLATFORM} \
-      -v ${HOST_SOURCE}:${CLIENT_SOURCE}:ro \
-      -v ${HOST_REPO}:${CLIENT_REPO}:rw \
-      -e PYENV_ROOT=${CLIENT_REPO}/pyenv ${CONTAINER_IMAGE} bash --noprofile --norc ${CLIENT_SOURCE}/internal-build-python.sh "$@"
-    # ... then install the environment itself, we don't give rw access to the
-    # repo by default, we copy the files over later.
+# Step 4: Create a temporary directory for virtual environment building
+SCRATCH=$(mktemp -d)
+trap "rm -rf $SCRATCH" EXIT
 
-    # Make a temp dir...
-    SCRATCH=$(mktemp -t tmp.XXXXXXXXXX)
-    # ... and then delete it when the job exits
-    trap "rm -rf \"$SCRATCH\"" EXIT
-
-    nerdctl container run --rm -it \
-      --platform ${PLATFORM} \
-      -v ${HOST_SOURCE}:${CLIENT_SOURCE}:ro \
-      -v ${SCRATCH}:${CLIENT_REPO}:rw \
-      -v ${HOST_REPO}:${CLIENT_REPO_RO}:ro \
-      -e PYENV_ROOT=${CLIENT_REPO}/pyenv ${CONTAINER_IMAGE} bash --noprofile --norc ${CLIENT_SOURCE}/internal-build-venv.sh "$@"
-
-    # FIXME: Only copy one subdir corresponding to the single thing we had, so
-    # users can't sneakily overwrite other installs
-    cp -a $SCRATCH/* $HOST_REPO
-    rm -rf $SCRATCH
+# Step 5: Hash the requirements.txt file (if exists)
+if [ -f requirements.txt ]; then
+  REQ_HASH=$(sha256sum requirements.txt | awk '{ print $1 }')
+  echo "Requirements hash: $REQ_HASH"
 else
-    env -i -- HOME=$(pwd)/buildhome bash --noprofile --norc internal-build-venv.sh "$@"
+  echo "Error: requirements.txt not found!"
+  exit 1
 fi
+
+# Step 6: Build the virtual environment inside Docker
+docker run --rm -it \
+  --platform ${PLATFORM} \
+  -v ${HOST_SOURCE}:${CLIENT_SOURCE}:rw \
+  -v ${HOST_SOURCE}/pyenv:${CLIENT_SOURCE}/payload/pyenv:rw \
+  -v ${SCRATCH}:${CLIENT_REPO}:rw \
+  -v ${HOST_REPO}:${CLIENT_REPO_RO}:ro \
+  -e PYENV_ROOT=${CLIENT_REPO}/pyenv ${CONTAINER_IMAGE} \
+  bash --noprofile --norc ${CLIENT_SOURCE}/payload/internal-build-venv.sh "$@"
+
+# Step 7: Inside the Docker container, install the packages based on requirements.txt
+docker run --rm -it \
+  --platform ${PLATFORM} \
+  -v ${HOST_SOURCE}:${CLIENT_SOURCE}:rw \
+  -v ${HOST_SOURCE}/pyenv:${CLIENT_SOURCE}/payload/pyenv:rw \
+  -v ${SCRATCH}:${CLIENT_REPO}:rw \
+  -v ${HOST_REPO}:${CLIENT_REPO_RO}:ro \
+  -e PYENV_ROOT=${CLIENT_REPO}/pyenv ${CONTAINER_IMAGE} \
+  bash -c "
+    source ${CLIENT_REPO}/bin/activate &&
+    pip install --upgrade pip &&
+    pip install --dry-run -r ${CLIENT_SOURCE}/requirements.txt --report ${CLIENT_REPO}/install_report.json &&
+    pip install -r ${CLIENT_SOURCE}/requirements.txt
+  "
+
+# Step 8: Copy the virtual environment back to the host
+cp -a $SCRATCH/* $HOST_REPO
+
+echo "Virtual environment built and requirements installed. Check $HOST_REPO for the environment and install report."

@@ -6,7 +6,7 @@
 
 TOP=$(dirname $0)
 
-# TODO: make this configuratble
+# TODO: make this configurable
 VERSION=3.12.4
 
 ($TOP/pyenv/bin/pyenv local $VERSION &>/dev/null)
